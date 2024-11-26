@@ -1,4 +1,4 @@
-
+Initial draft files contain:
 
 1. **`app.ipynb`**: Main implementation of the IAC model and simulation workflow.
 
