@@ -42,8 +42,8 @@ def free_local_port(port = '8050'):
         for i in range(len(lines[0])):
             field, data = lines[0][i], lines[1][i]
             info[field] = data
-    
-        if 'PID' in info.keys() and info.get('PID', None) is not None:
+        
+        if info.get('PID', None) is not None:
             result = subprocess.run(["kill", "-9", info['PID']])
             
 def find_free_port():
@@ -389,8 +389,17 @@ def plot(df, hidden_state=None):
     try:
         port = find_free_port()
     except:
+        print("No ports are available. The below process is running on local port 8050:\n")
+        local_port = subprocess.run(["lsof", "-i", f":8050"], 
+                                  stdout=subprocess.PIPE, 
+                                  stderr=subprocess.PIPE, 
+                                  text=True)
+        print(local_port.stdout)
+        user_in = input("\nWould you like to kill the above process to make space? [y/n] ")
+        if user_in.strip().lower() not in ['y', 'yes']:
+            print('Aborting Visualization...')
+            return
         port = '8050'
         free_local_port()
     
     app.run(port=port)
-
