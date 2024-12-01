@@ -276,7 +276,7 @@ def create_plot(pos, pools, G, hover_node=None):
             name=list(set(pools.values()))[i],
             showlegend=True
         ))
-        
+    
     # removing grid and axes
     fig.update_layout(
         showlegend=True,
@@ -284,8 +284,9 @@ def create_plot(pos, pools, G, hover_node=None):
         xaxis=dict(showgrid=False, zeroline=False, showticklabels=False),
         yaxis=dict(showgrid=False, zeroline=False, showticklabels=False),
         width=700,
-        height=700,
+        height=675,
         plot_bgcolor="white",
+        margin=dict(t=30, l=20, r=20),
         title = "Interactive Activation and Competition Network"
     )
 
@@ -302,45 +303,94 @@ def plot(df, hidden_state=None):
     app = dash.Dash(__name__)
 
     # App layout
-    app.layout = html.Div([
-        dcc.Graph(
-            id = 'network-graph', # figure
-            figure = create_plot(pos, pools, G),
-            style = {'margin-top': '50px'}
-        ),
-        html.Button( # reset button (Dash not compatible with ipywidgets, need html Button instead)
-            id = 'reset-button',
-            children = 'Reset Network',
-            style = {
-                'position': 'absolute',
-                'top': '20px',
-                'left': '20px',
-                'background-color': 'skyblue',
-                'color': 'white',
-                'border': 'none',
-                'borderRadius': '5px',
-                'padding': '5px 5px',
-                'cursor': 'pointer'
-            }
-        ),
-        dcc.Store(
-            id = 'selected-nodes', # place to store selected nodes
-            data = []
-        ),
-    ])
+    app.layout = html.Div(
+        style={'display': 'flex', 'height':'90vh'},
+        children=[
+            # control panel (left)
+            html.Div(
+                style={
+                    'width': '115px',
+                    'padding': '10px',
+                    'background-color': '#f8f9fa',
+                    'box-shadow': '2px 0 5px rgba(0, 0, 0, 0.1)',
+                    'flex':'none', # fixed size 
+                },
+                children=[
+                    html.Button( # reset button 
+                        id = 'reset-button',
+                        children = 'Reset Network',
+                        style = {
+                            'background-color': 'skyblue',
+                            'color': 'white',
+                            'border': 'none',
+                            'borderRadius': '5px',
+                            'padding': '5px 5px',
+                            'cursor': 'pointer',
+                            'margin-bottom': '10px'
+                        }
+                    ),
+                    html.Div( # box for slider output
+                        id='slider-output',
+                        style={
+                            'margin-bottom': '10px',
+                            'font-size': '14px',
+                            'text-align': 'center',
+                        }
+                    ),
+                    dcc.Slider(0,1000, # slider for simulation
+                       value=0,
+                       id='num-cycles',
+                       vertical=True,
+                    ),
+                    html.Button( # run simulation button
+                        id = 'run-simulation',
+                        children = 'Run Simulation',
+                        style = {
+                            'background-color': '#FA5F55',
+                            'color': 'white',
+                            'border': 'none',
+                            'borderRadius': '5px',
+                            'padding': '5px 5px',
+                            'cursor': 'pointer',
+                            'margin-top': '10px',
+                        }
+                    ),
+                    dcc.Store(
+                        id = 'selected-nodes', # place to store selected nodes
+                        data = []
+                    ),
+                ]
+            ),
+            # network (right)
+            html.Div(
+                style={'flex':'1', # will resize based on available space
+                       'padding': '10px',
+                },
+                children=[
+                    dcc.Graph(
+                        id = 'network-graph', # figure
+                        figure = create_plot(pos, pools, G),
+                    ),
+                ]
+            )
+        ]
+    )
 
     @app.callback(
          [Output('network-graph', 'figure'),   # Output for figure
-          Output('selected-nodes', 'data')],   # Output for node storage
+          Output('selected-nodes', 'data'),    # Output for node storage
+          Output('slider-output', 'children'), # Output for slider container
+          Output('num-cycles', 'value')],      # Output for slider value
          [Input('network-graph', 'hoverData'), # Input for hover event
           Input('network-graph', 'clickData'), # Input for click event
-          Input('reset-button', 'n_clicks')],  # Input for reset button click
+          Input('reset-button', 'n_clicks'),   # Input for reset button click
+          Input('num-cycles', 'value')],       # Input for slider
          [State('selected-nodes', 'data'),     # State of selected-nodes
           State('network-graph', 'figure')],   # State of figure
     )
-    def fig_update(hoverData, clickData, n_clicks, data, figure):
+    def fig_update(hoverData, clickData, n_clicks, value, data, figure):
         '''
-        returns: fig, clicked_nodes
+        returns: fig, clicked_nodes, slider_text, slider_value
         '''
         fig = go.Figure(figure)
         event = dash.callback_context
@@ -374,6 +424,7 @@ def plot(df, hidden_state=None):
         if trig_event == 'reset-button.n_clicks':
             fig = create_plot(pos, pools, G)
             data = []
+            value = 0
         
         for clicked_node in data:
             clicked_ind = list(G.nodes()).index(clicked_node)
@@ -384,7 +435,9 @@ def plot(df, hidden_state=None):
                     curr_colors[clicked_ind] = 'lightcyan'
                     trace.marker.color = curr_colors
     
-        return fig, data
+        slider_text = f"Number of Update Cycles: {value}"
+    
+        return fig, data, slider_text, value
     
     try:
         port = find_free_port()
@@ -399,6 +452,7 @@ def plot(df, hidden_state=None):
         if user_in.strip().lower() not in ['y', 'yes']:
             print('Aborting Visualization...')
             return
+        print('Freeing port 8050...')
         port = '8050'
         free_local_port()
     
