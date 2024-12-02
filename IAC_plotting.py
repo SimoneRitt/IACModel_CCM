@@ -6,6 +6,8 @@ import panel as pn
 import networkx as nx
 import plotly.graph_objs as go
 import plotly.express as px
+import json
+import random
 
 import ipywidgets as widgets
 from IPython.display import display
@@ -16,17 +18,11 @@ import dash
 from dash import dcc, html
 from dash.dependencies import Input, Output, State
 
-import asyncio
-import threading
-
 from itertools import combinations
 import subprocess
 
 # node color palette
 col_pal = px.colors.qualitative.Plotly
-
-def test():
-    return
 
 def free_local_port(port = '8050'):
     # freeing local port if necessary (to run Dash app)
@@ -198,6 +194,41 @@ def init_graph(df, hidden_state = None):
         
     return pos, pools, G
 
+def serialize_graph(G):
+    '''
+    Converts Graph to JSON-serialized object for use in JavaScript documents
+    '''
+    return nx.node_link_data(G, 
+                             edges='edges',
+                             nodes='nodes')
+
+def deserialize_graph(data):
+    '''
+    Converts JSON-serialized object back to NetworkX Graph object
+    '''
+    return nx.node_link_graph(data,
+                              edges='edges',
+                              nodes='nodes')
+
+def run_simulation(G, pools, clicked_nodes, num_cycles):
+    '''
+    Updates the underlying graph 5 times per simulation
+    Random connection weight updates
+    '''
+    G = G.copy()
+        
+    for i in range(num_cycles):
+        for node in clicked_nodes:
+            # updating edges to node
+            node_edges = [e for e in G.edges(data=True) if node in e]
+            for u,v,w in node_edges:
+                weight_update = (random.random() if pools[u] != pools[v] 
+                                 else (-1*random.random()))
+                G.remove_edges_from([(u,v,w)])
+                G.add_edge(u, v, weight=(w['weight']+weight_update))
+            
+    return G
+
 # Function to create the plot
 def create_plot(pos, pools, G, hover_node=None):
     # creating figure
@@ -209,9 +240,33 @@ def create_plot(pos, pools, G, hover_node=None):
     colors = [col_pal[list(set(pools.values())).index(pools[n])] for n in G.nodes()]
     linewidths = connection_to_lw(G.edges(data=True))
     
+    # plotting non-zero connections
+    for edge_group, line_width in zip(G.edges(data=True), linewidths):
+        u, v, d = edge_group
+        # skipping 0 weight
+        if d['weight'] == 0:
+            continue
+        # skipping hover_node connections
+        if (hover_node is not None and hover_node in {u,v}):
+            continue
+        x = [pos[u][0], pos[v][0], None]
+        y = [pos[u][1], pos[v][1], None]
+        
+        # line color (light red and light blue)
+        line_color = '#8181ff' if pools[u] != pools[v] else '#ff8181'
+        
+        fig.add_trace(go.Scatter(
+                    x=x, y=y, 
+                    line=dict(width=line_width, color=line_color),
+                    hoverinfo='none',
+                    mode='lines',
+                    showlegend=False)
+                  )
+    
     # setting up node outline colors
     outline_colors = colors.copy()
     
+    # plotting hover node if needed
     if hover_node is not None:
         hidden_ind = list(G.nodes()).index(hover_node)
         for edge_group, line_width in zip(G.edges(data=True), linewidths):
@@ -245,7 +300,8 @@ def create_plot(pos, pools, G, hover_node=None):
         text=[f"{n.split(': ')[1]}" for n in G.nodes()],
         marker=dict(size=sizes, 
                     color=colors,
-                    line=dict(width=2, color=outline_colors)
+                    line=dict(width=2, color=outline_colors),
+                    opacity=1.0,
                    ),
         hoverinfo="text",
         hovertext=[f"Activation: {activations[n]}<br>Net Input: {activations[n]-rest_act}" for n in G.nodes()],
@@ -371,6 +427,10 @@ def plot(df, hidden_state=None):
                         id = 'network-graph', # figure
                         figure = create_plot(pos, pools, G),
                     ),
+                    dcc.Store(
+                        id = 'graph-state', # store graph
+                        data = serialize_graph(G)
+                    ),
                 ]
             )
         ]
@@ -378,20 +438,33 @@ def plot(df, hidden_state=None):
 
     @app.callback(
          [Output('network-graph', 'figure'),   # Output for figure
+          Output('graph-state', 'data'),       # Output for graph
           Output('selected-nodes', 'data'),    # Output for node storage
           Output('slider-output', 'children'), # Output for slider container
           Output('num-cycles', 'value')],      # Output for slider value
          [Input('network-graph', 'hoverData'), # Input for hover event
           Input('network-graph', 'clickData'), # Input for click event
           Input('reset-button', 'n_clicks'),   # Input for reset button click
+          Input('run-simulation', 'n_clicks'), # Input for simulation button click
           Input('num-cycles', 'value')],       # Input for slider
          [State('selected-nodes', 'data'),     # State of selected-nodes
-          State('network-graph', 'figure')],   # State of figure
+          State('network-graph', 'figure'),    # State of figure
+          State('graph-state', 'data')]        # State of Graph 
     )
-    def fig_update(hoverData, clickData, n_clicks, value, data, figure):
+    def fig_update(hoverData,
+                   clickData,
+                   n_clicks_reset, 
+                   n_clicks_sim, 
+                   value, 
+                   selected_data, 
+                   figure,
+                   graph_data):
         '''
         returns: fig, clicked_nodes, slider_text, slider_value
         '''
+        
+        G = deserialize_graph(graph_data)
+        
         fig = go.Figure(figure)
         event = dash.callback_context
         trig_event = event.triggered[0]['prop_id']
@@ -406,8 +479,8 @@ def plot(df, hidden_state=None):
     
         if trig_event == 'network-graph.clickData' and clickData and 'points' in clickData:
             # toggle back to normal if already selected
-            if selected_node in data:
-                data.remove(selected_node)
+            if selected_node in selected_data:
+                selected_data.remove(selected_node)
             
                 # resetting color back to original color
                 orig_colors = [col_pal[list(set(pools.values())).index(pools[n])] for n in G.nodes()]
@@ -419,14 +492,31 @@ def plot(df, hidden_state=None):
                     
             # else add node to selected-nodes
             else:
-                data.append(selected_node)
+                selected_data.append(selected_node)
     
         if trig_event == 'reset-button.n_clicks':
+            # resetting all Graph connections to 0
+            edges = [e for e in G.edges(data=True)]
+            for u,v,w in edges:
+                G.remove_edges_from([(u,v,w)])
+                G.add_edge(u, v, weight=0)
+            
+            # creating default figure
             fig = create_plot(pos, pools, G)
-            data = []
+            
+            # emptying clicked nodes
+            selected_data = []
+            
+            # resetting slider value
             value = 0
         
-        for clicked_node in data:
+        if trig_event == 'run-simulation.n_clicks':
+            G = run_simulation(G, pools, 
+                                    clicked_nodes = selected_data, 
+                                    num_cycles = value)
+            fig = create_plot(pos, pools, G)
+        
+        for clicked_node in selected_data:
             clicked_ind = list(G.nodes()).index(clicked_node)
         
             for trace in fig.data:
@@ -436,8 +526,9 @@ def plot(df, hidden_state=None):
                     trace.marker.color = curr_colors
     
         slider_text = f"Number of Update Cycles: {value}"
+        graph_data = serialize_graph(G)
     
-        return fig, data, slider_text, value
+        return fig, graph_data, selected_data, slider_text, value
     
     try:
         port = find_free_port()
