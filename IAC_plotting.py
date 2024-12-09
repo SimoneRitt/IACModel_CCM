@@ -339,7 +339,7 @@ def create_plot(pos, pools, G, hover_node=None):
         hovermode="closest",
         xaxis=dict(showgrid=False, zeroline=False, showticklabels=False),
         yaxis=dict(showgrid=False, zeroline=False, showticklabels=False),
-        width=700,
+        width=675,
         height=675,
         plot_bgcolor="white",
         margin=dict(t=30, l=20, r=20),
