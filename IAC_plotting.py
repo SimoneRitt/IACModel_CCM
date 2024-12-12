@@ -1,4 +1,5 @@
 # PLOTTING FUNCTIONS FOR USE IN JUPYTER NOTEBOOKS
+# plot() takes in pandas DataFrame and a column name (hidden unit column) and produces an interactive Dash app
 
 import numpy as np
 import pandas as pd
@@ -21,9 +22,20 @@ from dash.dependencies import Input, Output, State
 from itertools import combinations
 import subprocess
 
+# ---------- IAC MODEL PARAMETERS ----------
+
+MAX = 1.0    # maximum activation
+MIN = -0.2   # minimum activation
+REST = -0.1  # resting activation
+DECAY = 0.1  # decay rate
+ESTR = 0.4   # external input weight
+ALPHA = 0.1  # internal excitatory input weight
+GAMMA = 0.1  # internal inhibitory input weight
+
 # node color palette
 col_pal = px.colors.qualitative.Plotly
 
+# ---------- HOSTING FUNCTIONS ----------
 def free_local_port(port = '8050'):
     # freeing local port if necessary (to run Dash app)
     port_process = subprocess.run(["lsof", "-i", f":{port}"], 
@@ -46,16 +58,9 @@ def find_free_port():
     with socket.socket() as s:
         s.bind(('', 0))            # Bind to a free port provided by the host.
         return s.getsockname()[1]
-            
-# changing node size based on activation (sum of connection weights)
-# Default activation is -0.1
-def get_activation(graph, rest_act=-0.1):
-    activations = {node: rest_act for node in graph.nodes()}
-    for u,v,d in graph.edges(data=True):
-        activations[u] += d["weight"]
-        if u != v:
-            activations[v] += d["weight"]
-    return activations, rest_act
+
+    
+# ---------- NODE/LINE PROPERTY FUNCTIONS ----------
 
 # Map activations to marker sizes (e.g. between 20 and 50)
 # Makes all nodes 35 if equal
@@ -67,6 +72,39 @@ def activation_to_size(act, low_bound=20, high_bound=50):
     dynam_sizes = [low_bound + (x-min_act) * (high_bound-low_bound)/(max_act-min_act)
                    for x in act.values()]
     return dynam_sizes
+
+# Map activations to node fill colors
+# keeps the default fill color if the activation is within (REST-0.05, REST+0.05)
+def activation_to_color(act, default_colors, 
+                        maxact=MAX, 
+                        minact=MIN, 
+                        restact=REST):
+    colors = []
+    bins = []
+    # if we have inhibitory activations
+    if minact < restact:
+        bins += list(np.linspace(minact, restact-0.1, 10))
+        colors += ['#9C191B', '#AC1C1E', '#BD1F21', '#D02224', '#DD2C2F',
+                   '#E35053', '#E66063', '#EC8385', '#F1A7A9', '#F6CACC']
+    # if we have excitatory activations
+    if maxact > restact:
+        bins += list(np.linspace(restact, maxact, 10))
+        colors += ['#E3F2FD', '#BBDEFB', '#90CAF9', '#64B5F6', '#42A5F5',
+                   '#2196F3', '#1E88E5', '#1976D2', '#1565C0', '#0D47A1']
+        
+    if len(bins) != 0:
+        # digitize returns indices corresponding to the bins each value falls into
+        bin_ind = np.digitize(list(act.values()), bins) - 1
+    
+    node_colors = []
+    for i in range(len(act.values())):
+        if np.abs(list(act.values())[i] - restact) > 0.05: 
+            # condition only occurs if len(bin_ind) > 0
+            node_colors.append(colors[bin_ind[i]])
+        else:
+            node_colors.append(default_colors[i])
+            
+    return node_colors
 
 # Map connection strengths to linewidths (e.g. between 1 and 5)
 # Makes all nodes 2 if equal
@@ -129,6 +167,8 @@ def position_nodes(pools):
                  
     return pos
 
+# ---------- GRAPH INITIALIZATION FUNCTION ----------
+
 def init_graph(df, hidden_state = None):
     '''
     Arguments
@@ -174,7 +214,7 @@ def init_graph(df, hidden_state = None):
         
         # hidden unit connections
         for n in pool_nodes:
-            hidden_connections = df[df[c]==n.split(': ')[1]][hidden_state].unique()
+            hidden_connections = df[df[c]==n.split(': ')[-1]][hidden_state].unique()
             edges.extend([(f'hidden: {h}', n, 0) for h in hidden_connections])
 
         # within-pool connections
@@ -194,54 +234,95 @@ def init_graph(df, hidden_state = None):
         
     return pos, pools, G
 
-def serialize_graph(G):
-    '''
-    Converts Graph to JSON-serialized object for use in JavaScript documents
-    '''
-    return nx.node_link_data(G, 
-                             edges='edges',
-                             nodes='nodes')
 
-def deserialize_graph(data):
-    '''
-    Converts JSON-serialized object back to NetworkX Graph object
-    '''
-    return nx.node_link_graph(data,
-                              edges='edges',
-                              nodes='nodes')
+# -------- NETWORK UPDATE FUNCTIONS ---------
 
-def run_simulation(G, pools, clicked_nodes, num_cycles):
+# GET NET INPUT FOR A NODE
+def get_netinput(node, G, pools, unit_info, extinput):
     '''
-    Updates the underlying graph 5 times per simulation
-    Random connection weight updates
+    Finds the net input for a node
+    '''
+    inhibitory, excitatory = 0.0, 0.0
+    for u, v, w in G.edges(data=True):
+        if node not in (u,v):
+            continue
+        # activation of connected node
+        act_neighbor = unit_info['activations'][u] if u != node else unit_info['activations'][v]
+        
+        # continuing if activation > 0
+        if act_neighbor > 0:
+            if pools[u] == pools[v]: # inhibitory connection
+                inhibitory += -1.0 * act_neighbor
+            
+            elif pools[u] != pools[v]: # excitatory connection
+                excitatory += 1.0 * act_neighbor
+    
+    net = (GAMMA * inhibitory) + (ALPHA * excitatory) + (ESTR * extinput)
+    return net
+
+# UPDATE NODE ACTIVATIONS, NET INPUTS, GRAPH EDGE WEIGHTS
+def run_simulation(G, pools, unit_info, clicked_nodes, num_cycles):
+    '''
+    Updates unit activations according to the IAC update rule
+    Arguments:
+    - G: networkx Graph object representing network
+    - pools: dictionary linking nodes and pools
+    - clicked_nodes: list of activated nodes
+    - unit_info: 
+    - num_cycles: number of cycles to run update
     '''
     G = G.copy()
-        
+    
     for i in range(num_cycles):
-        for node in clicked_nodes:
-            # updating edges to node
-            node_edges = [e for e in G.edges(data=True) if node in e]
-            for u,v,w in node_edges:
-                weight_update = (random.random() if pools[u] != pools[v] 
-                                 else (-1*random.random()))
-                G.remove_edges_from([(u,v,w)])
-                G.add_edge(u, v, weight=(w['weight']+weight_update))
+        
+        # updating net inputs
+        for node in G.nodes():
+            extinput = 1.0 if node in clicked_nodes else 0.0
+            unit_info['NetInputs'][node] = get_netinput(node, G, pools, 
+                                                        unit_info, extinput)
+            
+        # updating activations
+        for node in G.nodes():
+            curr_act = unit_info['activations'][node]
+            curr_net = unit_info['NetInputs'][node]
+            
+            if curr_net > 0:
+                delta_act = (MAX - curr_act) * curr_net - DECAY * (curr_act - REST)
+            else:
+                delta_act = (curr_act - MIN) * curr_net - DECAY * (curr_act - REST)
+                
+            nxt_act = curr_act + delta_act
+            # bounding the activation
+            nxt_act = min(MAX, nxt_act)
+            nxt_act = max(MIN, nxt_act)
+                
+            unit_info['activations'][node] = nxt_act
+              
+    
+    # updating weights (making activated nodes' edges non-zero)
+    edges = [e for e in G.edges(data=True)]
+    for u, v, w in edges:
+        # if connection contains activated node, display it
+        if unit_info['activations'][u] > 0 or unit_info['activations'][v] > 0:
+            new_weight = 1.0 if pools[u] != pools[v] else -1.0
+            G.remove_edges_from([(u,v,w)])
+            G.add_edge(u, v, weight = new_weight)
             
     return G
 
+# ---------- PLOTTING FUNCTIONS ----------
+
 # Function to create the plot
-def create_plot(pos, pools, G, hover_node=None):
+def create_plot(pos, pools, G, unit_info, hover_node=None):
     # creating figure
     fig = go.Figure()
     
     # getting node sizes, node colors, connection linewidths
-    activations, rest_act = get_activation(G)
-    sizes = activation_to_size(activations)
-    colors = [col_pal[list(set(pools.values())).index(pools[n])] for n in G.nodes()]
-    linewidths = connection_to_lw(G.edges(data=True))
+    default_colors = [col_pal[list(set(pools.values())).index(pools[n])] for n in G.nodes()]
+    colors = activation_to_color(unit_info['activations'], default_colors)
     
     # plotting non-zero connections
-    for edge_group, line_width in zip(G.edges(data=True), linewidths):
+    for edge_group in G.edges(data=True):
         u, v, d = edge_group
         # skipping 0 weight
         if d['weight'] == 0:
@@ -252,24 +333,24 @@ def create_plot(pos, pools, G, hover_node=None):
         x = [pos[u][0], pos[v][0], None]
         y = [pos[u][1], pos[v][1], None]
         
-        # line color (light red and light blue)
+        # line color (light blue and light red)
         line_color = '#8181ff' if pools[u] != pools[v] else '#ff8181'
         
         fig.add_trace(go.Scatter(
                     x=x, y=y, 
-                    line=dict(width=line_width, color=line_color),
+                    line=dict(width=2, color=line_color),
                     hoverinfo='none',
                     mode='lines',
                     showlegend=False)
                   )
     
     # setting up node outline colors
-    outline_colors = colors.copy()
+    outline_colors = default_colors.copy()
     
     # plotting hover node if needed
     if hover_node is not None:
-        hidden_ind = list(G.nodes()).index(hover_node)
-        for edge_group, line_width in zip(G.edges(data=True), linewidths):
+        hover_ind = list(G.nodes()).index(hover_node)
+        for edge_group in G.edges(data=True):
             u,v,d=edge_group
             x, y = [], []
             if hover_node in {u,v}:
@@ -279,32 +360,30 @@ def create_plot(pos, pools, G, hover_node=None):
                 # connection line color
                 line_color = 'blue' if pools[u] != pools[v] else 'red'
             
-                # node outline colors
-                adjust_ind = list(G.nodes()).index(u) if hover_node != u else list(G.nodes()).index(v)
-                outline_colors[adjust_ind] = line_color
-                outline_colors[hidden_ind] = 'black' # selected node line color
-                colors[hidden_ind] = 'yellow' # selected node fill color
+                # node outline and fill colors
+                outline_colors[hover_ind] = 'black' # selected node line color
+                colors[hover_ind] = 'yellow' # selected node fill color
             
                 fig.add_trace(go.Scatter(
                             x=x, y=y,
-                            line=dict(width=line_width, color=line_color),
+                            line=dict(width=3, color=line_color),
                             hoverinfo='none',
                             mode='lines',
                             showlegend=False,)
                           )
-    
+
     # Adding Nodes
     node_trace = go.Scatter(
         x=[pos[n][0] for n in G.nodes()],
         y=[pos[n][1] for n in G.nodes()],
-        text=[f"{n.split(': ')[1]}" for n in G.nodes()],
-        marker=dict(size=sizes, 
+        text=[f"{n.split(': ')[-1]}" for n in G.nodes()],
+        marker=dict(size=30, 
                     color=colors,
-                    line=dict(width=2, color=outline_colors),
+                    line=dict(width=6, color=outline_colors),
                     opacity=1.0,
                    ),
         hoverinfo="text",
-        hovertext=[f"Activation: {activations[n]}<br>Net Input: {activations[n]-rest_act}" for n in G.nodes()],
+        hovertext=[f"Activation: {unit_info['activations'][n]:.3f}<br>Net Input: {unit_info['NetInputs'][n]:.3f}" for n in G.nodes()],
         mode="markers+text",
         showlegend=False)
     fig.add_trace(node_trace)
@@ -324,7 +403,7 @@ def create_plot(pos, pools, G, hover_node=None):
         name="inhibitory",
         showlegend=True
     ))
-    for i in range(len(list(set(pools.values())))):
+    for i in range(len(set(pools.values()))):
         fig.add_trace(go.Scatter(
             x=[None], y=[None],
             marker=dict(size=20,color=col_pal[i]),
@@ -348,12 +427,47 @@ def create_plot(pos, pools, G, hover_node=None):
 
     return fig
 
+
+def serialize_graph(G):
+    '''
+    Converts Graph to JSON-serialized object for use in JavaScript documents
+    '''
+    return nx.node_link_data(G, 
+                             edges='edges',
+                             nodes='nodes')
+
+def deserialize_graph(data):
+    '''
+    Converts JSON-serialized object back to NetworkX Graph object
+    '''
+    return nx.node_link_graph(data,
+                              edges='edges',
+                              nodes='nodes')
+
+def serialize_dict(d):
+    '''
+    Converts dictionary to JSON-serialized object for use in JavaScript documents
+    '''
+    return json.dumps(d)
+
+def deserialize_dict(data):
+    '''
+    Converts JSON-serialized object back to dictionary
+    '''
+    return json.loads(data)
+
+    
 def plot(df, hidden_state=None):
     '''
     Takes in DataFrame and creates visualization
     '''
+    # initializing graph
     pos, pools, G = init_graph(df, hidden_state)
     pos_map = {tuple(v):k for k,v in pos.items()}
+    
+    # setting initial unit info (activation and net input)
+    unit_info = {'activations': {node: REST for node in G.nodes()},
+                 'NetInputs': {node: 0.0 for node in G.nodes()}}
     
     # setting up Dash app
     app = dash.Dash(__name__)
@@ -376,7 +490,7 @@ def plot(df, hidden_state=None):
                         id = 'reset-button',
                         children = 'Reset Network',
                         style = {
-                            'background-color': 'skyblue',
+                            'background-color': '#4fb3db',
                             'color': 'white',
                             'border': 'none',
                             'borderRadius': '5px',
@@ -425,11 +539,15 @@ def plot(df, hidden_state=None):
                 children=[
                     dcc.Graph(
                         id = 'network-graph', # figure
-                        figure = create_plot(pos, pools, G),
+                        figure = create_plot(pos, pools, G, unit_info),
                     ),
                     dcc.Store(
                         id = 'graph-state', # store graph
                         data = serialize_graph(G)
+                    ),
+                    dcc.Store(
+                        id = 'unit-info', # store activations, net input
+                        data = serialize_dict(unit_info)
                     ),
                 ]
             )
@@ -439,6 +557,7 @@ def plot(df, hidden_state=None):
     @app.callback(
          [Output('network-graph', 'figure'),   # Output for figure
           Output('graph-state', 'data'),       # Output for graph
+          Output('unit-info', 'data'),         # Output for Units
           Output('selected-nodes', 'data'),    # Output for node storage
           Output('slider-output', 'children'), # Output for slider container
           Output('num-cycles', 'value')],      # Output for slider value
@@ -449,7 +568,8 @@ def plot(df, hidden_state=None):
           Input('num-cycles', 'value')],       # Input for slider
          [State('selected-nodes', 'data'),     # State of selected-nodes
           State('network-graph', 'figure'),    # State of figure
-          State('graph-state', 'data')]        # State of Graph 
+          State('graph-state', 'data'),        # State of Graph 
+          State('unit-info', 'data')]          # State of Units
     )
     def fig_update(hoverData,
                    clickData,
@@ -458,12 +578,15 @@ def plot(df, hidden_state=None):
                    value, 
                    selected_data, 
                    figure,
-                   graph_data):
+                   graph_data,
+                   unit_data):
         '''
-        returns: fig, clicked_nodes, slider_text, slider_value
+        returns: fig, graph state, unit info state, 
+                 clicked_nodes, slider_text, slider_value
         '''
         
         G = deserialize_graph(graph_data)
+        unit_info = deserialize_dict(unit_data)
         
         fig = go.Figure(figure)
         event = dash.callback_context
@@ -475,19 +598,18 @@ def plot(df, hidden_state=None):
             node_ind = list(G.nodes()).index(selected_node)
     
         if trig_event == 'network-graph.hoverData' and hoverData and 'points' in hoverData:
-            fig = create_plot(pos, pools, G, hover_node=selected_node)
+            fig = create_plot(pos, pools, G, unit_info, hover_node=selected_node)
     
         if trig_event == 'network-graph.clickData' and clickData and 'points' in clickData:
             # toggle back to normal if already selected
             if selected_node in selected_data:
                 selected_data.remove(selected_node)
             
-                # resetting color back to original color
-                orig_colors = [col_pal[list(set(pools.values())).index(pools[n])] for n in G.nodes()]
+                # resetting color back to hover color
                 for trace in fig.data:
                     if 'marker' in trace and 'markers+text' in trace.mode:
                         curr_colors = list(trace.marker.color)
-                        curr_colors[node_ind] = 'yellow' #orig_colors[node_ind]
+                        curr_colors[node_ind] = 'yellow'
                         trace.marker.color = curr_colors
                     
             # else add node to selected-nodes
@@ -500,9 +622,13 @@ def plot(df, hidden_state=None):
             for u,v,w in edges:
                 G.remove_edges_from([(u,v,w)])
                 G.add_edge(u, v, weight=0)
+                
+            # resetting unit_info
+            unit_info['activations'] = {node: REST for node in G.nodes()}
+            unit_info['NetInputs'] = {node: 0.0 for node in G.nodes()}
             
             # creating default figure
-            fig = create_plot(pos, pools, G)
+            fig = create_plot(pos, pools, G, unit_info)
             
             # emptying clicked nodes
             selected_data = []
@@ -511,24 +637,30 @@ def plot(df, hidden_state=None):
             value = 0
         
         if trig_event == 'run-simulation.n_clicks':
-            G = run_simulation(G, pools, 
-                                    clicked_nodes = selected_data, 
-                                    num_cycles = value)
-            fig = create_plot(pos, pools, G)
+            G = run_simulation(G, pools, unit_info,
+                                clicked_nodes = selected_data, 
+                                num_cycles = value)
+            
+            # print statement to help keep track of results
+            #print({k: v for k, v in sorted(unit_info['activations'].items(), reverse=True, key=lambda item: item[1])})
+            fig = create_plot(pos, pools, G, unit_info)
         
         for clicked_node in selected_data:
             clicked_ind = list(G.nodes()).index(clicked_node)
         
             for trace in fig.data:
+                # identifying node trace
                 if 'marker' in trace and 'markers+text' in trace.mode:
                     curr_colors = list(trace.marker.color)
-                    curr_colors[clicked_ind] = 'lightcyan'
+                    # updating selected node fill color
+                    curr_colors[clicked_ind] = '#31fa01' # lime green
                     trace.marker.color = curr_colors
     
         slider_text = f"Number of Update Cycles: {value}"
         graph_data = serialize_graph(G)
+        unit_data = serialize_dict(unit_info)
     
-        return fig, graph_data, selected_data, slider_text, value
+        return fig, graph_data, unit_data, selected_data, slider_text, value
     
     try:
         port = find_free_port()
