@@ -9,4 +9,4 @@ Directory:
 - `data/` contains McClelland's original West Side Story inspired Jets vs. Sharks dataset (`jets_sharks.csv`), as well as several novel application datasets.
 - `IAC_plotting.py` contains the core visualization functions and can be imported into Jupyter Notebooks for interactive use.
   - Within this script, `plot(df, hidden_state=None)` takes in a Pandas DataFrame and a string column name and renders the visualization
-- `IAC_examples.ipynb` contains example implementations of the network.
+- `IAC_Example.ipynb` contains example implementations of the network.
