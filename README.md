@@ -3,17 +3,10 @@
 
 ### Interactive Activation and Competition (IAC) Network
 
-This project seeks to implement an interactive visualization of James McClelland's IAC network. This network represents human memory and can be used to illustrate several interesting properties of human cognition.
+This project seeks to implement an interactive visualization of James McClelland's IAC network. This network represents human memory and can be used to illustrate several interesting properties of human cognition. 
 
-#### Getting Started
-
-For convenience, environment requirements are specified in `requirements.txt`. To set up an IAC conda environment, follow these steps:
-- `conda create -n IAC python=3.10.15`
-- `conda activate IAC`
-- Navigate to the directory `IACModel_CCM`
-- `pip install -r requirements.txt`
-
-To create a Jupyter kernel called `IAC`, run: `python -m ipykernel install --name IAC --user`
-
-To uninstall the Jupyter kernel, run: `jupyter kernelspec uninstall IAC` 
-- Note that the kernel name may be slightly different. You can check this with `jupyter kernelspec list`
+Directory:
+- `data/` contains McClelland's original West Side Story inspired Jets vs. Sharks dataset (`jets_sharks.csv`), as well as several novel application datasets.
+- `IAC_plotting.py` contains the core visualization functions and can be imported into Jupyter Notebooks for interactive use.
+  - Within this script, `plot(df, hidden_state=None)` takes in a Pandas DataFrame and a string column name and renders the visualization
+- `IAC_examples.ipynb` contains example implementations of the network.
